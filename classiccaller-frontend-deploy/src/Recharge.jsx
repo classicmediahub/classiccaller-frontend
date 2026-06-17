@@ -6,41 +6,65 @@ import { api } from "./api";
 const NAVY = "#0D0F1A";
 const GOLD = "#C9A84C";
 
-// Paystack Inline JS is loaded once from their CDN
 function loadPaystackScript() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (window.PaystackPop) return resolve();
     const script = document.createElement("script");
     script.src = "https://js.paystack.co/v1/inline.js";
     script.onload = resolve;
+    script.onerror = () => reject(new Error("Failed to load Paystack script"));
     document.body.appendChild(script);
   });
 }
 
 const PLANS = [
-  { id: 1, amount: 500,   label: "₦500",   minutes: 25,   validity: "7 days" },
-  { id: 2, amount: 1000,  label: "₦1,000", minutes: 60,   validity: "14 days", popular: true },
-  { id: 3, amount: 2000,  label: "₦2,000", minutes: 130,  validity: "30 days" },
-  { id: 4, amount: 5000,  label: "₦5,000", minutes: 350,  validity: "30 days" },
-  { id: 5, amount: 10000, label: "₦10,000",minutes: 750,  validity: "60 days" },
-  { id: 6, amount: 20000, label: "₦20,000",minutes: 1600, validity: "90 days" },
+  { id: 1, amount: 500,   label: "₦500",    minutes: 25,   validity: "7 days" },
+  { id: 2, amount: 1000,  label: "₦1,000",  minutes: 60,   validity: "14 days", popular: true },
+  { id: 3, amount: 2000,  label: "₦2,000",  minutes: 130,  validity: "30 days" },
+  { id: 4, amount: 5000,  label: "₦5,000",  minutes: 350,  validity: "30 days" },
+  { id: 5, amount: 10000, label: "₦10,000", minutes: 750,  validity: "60 days" },
+  { id: 6, amount: 20000, label: "₦20,000", minutes: 1600, validity: "90 days" },
 ];
+
+// ─── Get Paystack key from multiple sources ───────────────────────────────────
+// Vite bakes env vars at BUILD time. If the key wasn't set when Netlify built
+// the site, it won't be available — even if you add it later in Netlify UI.
+// We also support a runtime fallback via window.PAYSTACK_KEY for emergencies.
+function getPaystackKey() {
+  return (
+    import.meta.env.VITE_PAYSTACK_PUBLIC_KEY ||
+    window.__PAYSTACK_KEY__ ||
+    null
+  );
+}
 
 export default function Recharge() {
   const { wallet, refresh } = useAppData();
   const [selected, setSelected] = useState(2);
   const [custom, setCustom] = useState("");
-  const [status, setStatus] = useState("idle"); // idle | loading | verifying | success | error
+  const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
   const [paidAmount, setPaidAmount] = useState(0);
+  const [debugInfo, setDebugInfo] = useState("");
 
-  // Check if we just came back from Paystack redirect (callback_url)
+  const paystackKey = getPaystackKey();
+
+  // Show debug info on mount so we can diagnose
+  useEffect(() => {
+    const key = import.meta.env.VITE_PAYSTACK_PUBLIC_KEY;
+    if (key) {
+      setDebugInfo(`Key loaded: ${key.slice(0, 12)}...`);
+    } else {
+      setDebugInfo("VITE_PAYSTACK_PUBLIC_KEY not found in build");
+    }
+  }, []);
+
+  // Handle redirect back from Paystack
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const ref = params.get("ref");
     if (ref) {
       verifyPayment(ref);
-      // Clean the URL
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
@@ -70,34 +94,36 @@ export default function Recharge() {
 
   async function handlePay() {
     const amount = getAmount();
-    if (amount < 100) {
-      setError("Minimum recharge is ₦100");
+    if (amount < 100) { setError("Minimum recharge is ₦100"); return; }
+
+    const publicKey = getPaystackKey();
+    if (!publicKey) {
+      setError(
+        "Paystack key missing. You need to: 1) Add VITE_PAYSTACK_PUBLIC_KEY to Netlify environment variables, then 2) Trigger a new deploy on Netlify (the key is baked in at build time)."
+      );
       return;
     }
+
     setError("");
     setStatus("loading");
 
     try {
-      // 1. Get Paystack authorization URL + reference from backend
-      const { authorization_url, reference, access_code } = await api.paystackInit(amount);
-
-      // 2. Load Paystack Inline JS
+      const { reference } = await api.paystackInit(amount);
       await loadPaystackScript();
+
+      if (!window.PaystackPop) {
+        throw new Error("Paystack script did not load. Check your internet connection.");
+      }
 
       setStatus("idle");
 
-      // 3. Open Paystack popup
       const handler = window.PaystackPop.setup({
-        key: import.meta.env.VITE_PAYSTACK_PUBLIC_KEY,
-        email: "", // Paystack fills this from the transaction
-        amount: amount * 100, // kobo
+        key: publicKey,
+        amount: amount * 100,
         ref: reference,
         currency: "NGN",
-        onClose: () => {
-          setStatus("idle");
-        },
+        onClose: () => setStatus("idle"),
         callback: async (response) => {
-          // Payment done — verify on backend
           await verifyPayment(response.reference);
         },
       });
@@ -122,20 +148,26 @@ export default function Recharge() {
         display: "flex", justifyContent: "space-between", alignItems: "center",
       }}>
         <div>
-          <div style={{ fontSize: 10, color: "#fff", opacity: 0.5, marginBottom: 3, letterSpacing: 0.5 }}>
-            CURRENT BALANCE
-          </div>
-          <div style={{ fontSize: 22, fontWeight: 600, color: GOLD }}>
-            {balanceDisplay}
-          </div>
+          <div style={{ fontSize: 10, color: "#fff", opacity: 0.5, marginBottom: 3, letterSpacing: 0.5 }}>CURRENT BALANCE</div>
+          <div style={{ fontSize: 22, fontWeight: 600, color: GOLD }}>{balanceDisplay}</div>
         </div>
         <div style={{ fontSize: 10, color: "#fff", opacity: 0.35 }}>Classic Caller</div>
       </div>
 
+      {/* Debug info — remove after confirming key works */}
+      {debugInfo && (
+        <div style={{
+          background: "#f0f9ff", border: "1px solid #bae6fd",
+          borderRadius: 8, padding: "6px 10px", marginBottom: "0.75rem",
+          fontSize: 10, color: "#0369a1",
+        }}>
+          🔑 {debugInfo}
+        </div>
+      )}
+
       {status === "verifying" && (
         <div style={{ background: PURPLE_LIGHT, borderRadius: 8, padding: "0.85rem", textAlign: "center", marginBottom: "1rem" }}>
           <div style={{ fontSize: 13, color: PURPLE_DARK, fontWeight: 500 }}>⏳ Verifying your payment…</div>
-          <div style={{ fontSize: 11, color: PURPLE_DARK, opacity: 0.7, marginTop: 4 }}>Please wait</div>
         </div>
       )}
 
@@ -146,10 +178,9 @@ export default function Recharge() {
           <div style={{ fontSize: 12, color: GREEN, opacity: 0.8, marginTop: 3 }}>
             ₦{Number(paidAmount).toLocaleString()} added to your wallet
           </div>
-          <div onClick={() => setStatus("idle")} style={{
-            marginTop: "0.85rem", fontSize: 12, color: GREEN,
-            textDecoration: "underline", cursor: "pointer",
-          }}>Top up again</div>
+          <div onClick={() => setStatus("idle")} style={{ marginTop: "0.85rem", fontSize: 12, color: GREEN, textDecoration: "underline", cursor: "pointer" }}>
+            Top up again
+          </div>
         </div>
       )}
 
@@ -160,12 +191,13 @@ export default function Recharge() {
             {PLANS.map(p => {
               const active = selected === p.id && !custom;
               return (
-                <div key={p.id} onClick={() => { setSelected(p.id); setCustom(""); setStatus("idle"); setError(""); }}
+                <div key={p.id}
+                  onClick={() => { setSelected(p.id); setCustom(""); setStatus("idle"); setError(""); }}
                   style={{
                     border: `${active ? "1.5px" : "0.5px"} solid ${active ? PURPLE : "var(--color-border-tertiary)"}`,
                     background: active ? PURPLE_LIGHT : "var(--color-background-primary)",
-                    borderRadius: 8, padding: "0.75rem 0.5rem", cursor: "pointer",
-                    transition: "all 0.12s", position: "relative",
+                    borderRadius: 8, padding: "0.75rem 0.5rem",
+                    cursor: "pointer", transition: "all 0.12s", position: "relative",
                   }}>
                   {p.popular && (
                     <div style={{
@@ -174,15 +206,9 @@ export default function Recharge() {
                       padding: "2px 7px", borderRadius: 10, whiteSpace: "nowrap",
                     }}>POPULAR</div>
                   )}
-                  <div style={{ fontSize: 16, fontWeight: 600, color: active ? PURPLE_DARK : "var(--color-text-primary)" }}>
-                    {p.label}
-                  </div>
-                  <div style={{ fontSize: 10, color: "var(--color-text-secondary)", marginTop: 2 }}>
-                    ~{p.minutes} mins
-                  </div>
-                  <div style={{ fontSize: 9, color: "var(--color-text-secondary)", marginTop: 1 }}>
-                    {p.validity}
-                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: active ? PURPLE_DARK : "var(--color-text-primary)" }}>{p.label}</div>
+                  <div style={{ fontSize: 10, color: "var(--color-text-secondary)", marginTop: 2 }}>~{p.minutes} mins</div>
+                  <div style={{ fontSize: 9, color: "var(--color-text-secondary)", marginTop: 1 }}>{p.validity}</div>
                 </div>
               );
             })}
@@ -193,7 +219,6 @@ export default function Recharge() {
             border: `1px solid ${custom ? PURPLE : "var(--color-border-tertiary)"}`,
             borderRadius: 8, padding: "0.75rem 1rem", marginBottom: "1rem",
             display: "flex", alignItems: "center", gap: 8,
-            boxShadow: custom ? `0 0 0 3px ${PURPLE}18` : "none",
           }}>
             <span style={{ fontSize: 18, fontWeight: 500, color: "var(--color-text-secondary)" }}>₦</span>
             <input
@@ -212,10 +237,8 @@ export default function Recharge() {
             <div style={{
               background: "#FEF2F2", color: RED, fontSize: 12,
               padding: "9px 12px", borderRadius: 8, marginBottom: "0.85rem",
-              border: "1px solid #FECACA",
-            }}>
-              {error}
-            </div>
+              border: "1px solid #FECACA", lineHeight: 1.5,
+            }}>{error}</div>
           )}
 
           <button onClick={handlePay}
@@ -226,8 +249,7 @@ export default function Recharge() {
               color: getAmount() >= 100 ? GOLD : "var(--color-text-secondary)",
               border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600,
               fontFamily: "inherit", cursor: getAmount() >= 100 ? "pointer" : "default",
-              letterSpacing: 0.3, transition: "all 0.2s",
-              opacity: status === "loading" ? 0.7 : 1,
+              letterSpacing: 0.3, opacity: status === "loading" ? 0.7 : 1,
             }}>
             {status === "loading"
               ? "Opening payment…"

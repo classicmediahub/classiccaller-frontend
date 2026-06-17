@@ -40,7 +40,8 @@ const SCREEN_TITLES = {
 // ─── Live wallet badge + SSE dot ─────────────────────────────────────────────
 function LiveWalletBadge() {
   const { wallet, connected } = useAppData();
-  const currency = wallet?.currency === "USD" ? "$" : (wallet?.currency || "");
+  const rawCurrency = wallet?.currency || "NGN";
+  const currency = rawCurrency === "NGN" ? "₦" : rawCurrency === "USD" ? "$" : rawCurrency;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
       <div
@@ -57,7 +58,7 @@ function LiveWalletBadge() {
           fontSize: 11, background: PURPLE_LIGHT, color: PURPLE_DARK,
           padding: "4px 10px", borderRadius: 20, fontWeight: 500,
         }}>
-          {currency}{Number(wallet.balance).toFixed(2)}
+          {currency === 'NGN' ? '₦' : currency === 'USD' ? '$' : currency}{Number(wallet.balance).toLocaleString('en-NG', {minimumFractionDigits: 2})}
         </div>
       )}
     </div>
